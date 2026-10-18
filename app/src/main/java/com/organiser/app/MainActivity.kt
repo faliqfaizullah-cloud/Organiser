@@ -1,302 +1,270 @@
 package com.organiser.app
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-private val Bg = Color(0xFF121010)
-private val Card = Color(0xFF1E1B1B)
-private val Accent = Color(0xFFFF9A4D)
-
 class MainActivity : ComponentActivity() {
+    private var incoming by mutableStateOf<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handle(intent)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Card)) {
-                OrganiserApp()
-            }
+            MaterialTheme(
+                colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = CardC)
+            ) { OrganiserApp(incoming) { incoming = null } }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handle(intent)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun handle(i: Intent?) {
+        if (i?.action == Intent.ACTION_SEND && i.type?.startsWith("image/") == true) {
+            incoming = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
         }
     }
 }
 
 @Composable
-fun OrganiserApp() {
+fun OrganiserApp(incoming: Uri?, onIncomingHandled: () -> Unit) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     val store = remember { Store(ctx) }
+    val prefs = remember { Prefs(ctx) }
     var boards by remember { mutableStateOf(store.load()) }
+    var profile by remember { mutableStateOf(prefs.read()) }
+
+    var tab by remember { mutableStateOf(2) }
+    var sort by remember { mutableStateOf(0) }
     var openId by remember { mutableStateOf<String?>(null) }
-    fun update(n: List<Board>) { boards = n; store.save(n) }
-    val open = boards.find { it.id == openId }
-    BackHandler(open != null) { openId = null }
-
-    Surface(color = Bg, modifier = Modifier.fillMaxSize().systemBarsPadding()) {
-        if (open == null) {
-            HomeScreen(
-                boards,
-                onOpen = { openId = it.id },
-                onCreate = { name -> update(boards + Board(UUID.randomUUID().toString(), name, emptyList())) },
-                onDelete = { b ->
-                    b.items.forEach { File(ctx.filesDir, it.file).delete() }
-                    update(boards.filter { it.id != b.id })
-                }
-            )
-        } else {
-            BoardScreen(open, onBack = { openId = null }, onChange = { nb ->
-                update(boards.map { if (it.id == nb.id) nb else it })
-            })
-        }
-    }
-}
-
-@Composable
-fun CutoutImage(file: String, modifier: Modifier = Modifier) {
-    val ctx = LocalContext.current
-    val bmp by produceState<ImageBitmap?>(null, file) {
-        value = withContext(Dispatchers.IO) {
-            BitmapFactory.decodeFile(File(ctx.filesDir, file).path)?.asImageBitmap()
-        }
-    }
-    bmp?.let { Image(it, null, modifier, contentScale = ContentScale.Fit) }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun HomeScreen(
-    boards: List<Board>,
-    onOpen: (Board) -> Unit,
-    onCreate: (String) -> Unit,
-    onDelete: (Board) -> Unit
-) {
+    var pendingUri by remember { mutableStateOf<Uri?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var profileOpen by remember { mutableStateOf(false) }
+    var sheetKey by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showNew by remember { mutableStateOf(false) }
-    var toDelete by remember { mutableStateOf<Board?>(null) }
+    var showReminder by remember { mutableStateOf(false) }
+    var optBoard by remember { mutableStateOf<Board?>(null) }
+    var renameBoard by remember { mutableStateOf<Board?>(null) }
+    var deleteBoard by remember { mutableStateOf<Board?>(null) }
+    var moveFrom by remember { mutableStateOf<Pair<String, Item>?>(null) }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        Text("Organiser", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
-        Text("Your boards", color = Color(0xFFBBBBBB), fontSize = 14.sp,
-            modifier = Modifier.padding(top = 12.dp, bottom = 12.dp))
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(bottom = 24.dp)
-        ) {
-            items(boards, key = { it.id }) { b ->
-                Column(Modifier.combinedClickable(onClick = { onOpen(b) }, onLongClick = { toDelete = b })) {
-                    Box(Modifier.fillMaxWidth().aspectRatio(0.85f).background(Card, RoundedCornerShape(24.dp))) {
-                        Column(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            for (row in 0..1) Row(
-                                Modifier.weight(1f).fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                for (c in 0..1) {
-                                    val item = b.items.getOrNull(row * 2 + c)
-                                    Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                                        if (item != null) CutoutImage(item.file, Modifier.fillMaxSize().padding(2.dp))
-                                    }
-                                }
+    fun persist(n: List<Board>) { boards = n; store.save(n) }
+    fun setProfile(n: Profile) { profile = n; prefs.write(n) }
+    fun addBoard(name: String): Board {
+        val b = Board(UUID.randomUUID().toString(), name, emptyList())
+        persist(boards + b); return b
+    }
+    fun mapBoard(id: String, f: (Board) -> Board) = persist(boards.map { if (it.id == id) f(it) else it })
+
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        Reminder.ensureChannel(ctx)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        Reminder.schedule(ctx)
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try { Backup.import(ctx, uri); boards = store.load() } catch (_: Exception) {}
+        }
+    }
+
+    val open = boards.find { it.id == openId }
+    BackHandler(profileOpen || searching || openId != null) {
+        when { profileOpen -> profileOpen = false; searching -> searching = false; else -> openId = null }
+    }
+
+    Surface(color = Bg, modifier = Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().systemBarsPadding()) {
+            when {
+                profileOpen -> ProfileScreen(
+                    profile, boards,
+                    onChange = { setProfile(it) },
+                    onAvatar = { uri ->
+                        scope.launch {
+                            val name = withContext(Dispatchers.Default) {
+                                val bmp = squareThumb(loadBitmap(ctx, uri))
+                                val n = "avatar_${System.currentTimeMillis()}.png"
+                                File(ctx.filesDir, n).outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                                n
+                            }
+                            profile.avatar?.let { File(ctx.filesDir, it).delete() }
+                            setProfile(profile.copy(avatar = name))
+                        }
+                    },
+                    onBack = { profileOpen = false },
+                    onExport = {
+                        scope.launch {
+                            val f = withContext(Dispatchers.IO) { Backup.export(ctx) }
+                            shareFile(ctx, f, "application/zip")
+                        }
+                    },
+                    onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) }
+                )
+                searching -> SearchScreen(boards, profile.currency, { searching = false }) { bid, item -> sheetKey = bid to item.id }
+                open != null -> BoardScreen(
+                    open, profile.currency, pendingUri, { pendingUri = null },
+                    onBack = { openId = null },
+                    onRename = { renameBoard = open },
+                    onAdd = { item -> mapBoard(open.id) { it.copy(items = it.items + item) } },
+                    onItem = { item -> sheetKey = open.id to item.id }
+                )
+                else -> {
+                    Column(Modifier.fillMaxSize()) {
+                        TopBar(profile, { profileOpen = true }, { showReminder = true })
+                        Box(Modifier.weight(1f)) {
+                            when (tab) {
+                                0 -> HomeTab(boards, profile) { bid, item -> sheetKey = bid to item.id }
+                                1 -> DiscoverTab(boards) { addBoard(it) }
+                                else -> BoardsTab(boards, sort, { sort = it }, { openId = it.id }, { optBoard = it }, { showNew = true })
                             }
                         }
                     }
-                    Text(b.name, color = Color(0xFFDDDDDD), fontSize = 13.sp, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
+                    FloatingNav(tab, { tab = it }, { searching = true }, Modifier.align(Alignment.BottomCenter))
                 }
             }
-            item {
-                Column(Modifier.combinedClickable(onClick = { showNew = true })) {
-                    Box(
-                        Modifier.fillMaxWidth().aspectRatio(0.85f).drawBehind {
-                            drawRoundRect(
-                                Color(0xFF777777), size = Size(size.width, size.height),
-                                cornerRadius = CornerRadius(24.dp.toPx()),
-                                style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(16f, 12f)))
-                            )
-                        },
-                        contentAlignment = Alignment.Center
-                    ) { Icon(Icons.Default.Add, null, tint = Color(0xFF999999), modifier = Modifier.size(36.dp)) }
-                    Text("New", color = Color(0xFFDDDDDD), fontSize = 13.sp,
-                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
-                }
+
+            // ---- item sheet
+            val key = sheetKey
+            val sheetItem = key?.let { k -> boards.find { it.id == k.first }?.items?.find { it.id == k.second } }
+            if (key != null && sheetItem != null) {
+                ItemSheet(
+                    sheetItem, profile.currency,
+                    onDismiss = { sheetKey = null },
+                    onSave = { n -> mapBoard(key.first) { b -> b.copy(items = b.items.map { if (it.id == n.id) n else it }) } },
+                    onDelete = {
+                        File(ctx.filesDir, sheetItem.file).delete()
+                        mapBoard(key.first) { b -> b.copy(items = b.items.filter { it.id != sheetItem.id }) }
+                        sheetKey = null
+                    },
+                    onMove = { moveFrom = key.first to sheetItem }
+                )
             }
         }
     }
 
-    if (showNew) {
-        var name by remember { mutableStateOf("") }
+    // ---- dialogs
+    if (showNew) NameDialog("New board", "Name (e.g. Fashion)", "", "Create", { showNew = false }) { addBoard(it) }
+
+    renameBoard?.let { b ->
+        NameDialog("Rename board", "Name", b.name, "Save", { renameBoard = null }) { n -> mapBoard(b.id) { it.copy(name = n) } }
+    }
+    optBoard?.let { b ->
         AlertDialog(
-            onDismissRequest = { showNew = false },
-            title = { Text("New board") },
-            text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name (e.g. Fashion)") }) },
-            confirmButton = {
-                TextButton(onClick = { if (name.isNotBlank()) onCreate(name.trim()); showNew = false }) { Text("Create") }
+            onDismissRequest = { optBoard = null },
+            title = { Text(b.name) },
+            text = {
+                Column {
+                    TextButton(onClick = { renameBoard = b; optBoard = null }) { Text("Rename") }
+                    TextButton(onClick = { deleteBoard = b; optBoard = null }) { Text("Delete", color = Color(0xFFFF6B6B)) }
+                }
             },
-            dismissButton = { TextButton(onClick = { showNew = false }) { Text("Cancel") } }
+            confirmButton = { TextButton(onClick = { optBoard = null }) { Text("Close") } }
         )
     }
-    toDelete?.let { b ->
+    deleteBoard?.let { b ->
         AlertDialog(
-            onDismissRequest = { toDelete = null },
+            onDismissRequest = { deleteBoard = null },
             title = { Text("Delete \"${b.name}\"?") },
-            text = { Text("The board and all its items will be removed.") },
-            confirmButton = { TextButton(onClick = { onDelete(b); toDelete = null }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancel") } }
+            text = { Text("The board and all ${b.items.size} item(s) will be removed.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    b.items.forEach { File(ctx.filesDir, it.file).delete() }
+                    persist(boards.filter { it.id != b.id }); deleteBoard = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deleteBoard = null }) { Text("Cancel") } }
+        )
+    }
+    moveFrom?.let { (fromId, item) ->
+        AlertDialog(
+            onDismissRequest = { moveFrom = null },
+            title = { Text("Move to…") },
+            text = {
+                Column {
+                    boards.filter { it.id != fromId }.forEach { b ->
+                        TextButton(onClick = {
+                            persist(boards.map {
+                                when (it.id) {
+                                    fromId -> it.copy(items = it.items.filter { i -> i.id != item.id })
+                                    b.id -> it.copy(items = it.items + item)
+                                    else -> it
+                                }
+                            })
+                            moveFrom = null; sheetKey = null
+                        }) { Text(b.name) }
+                    }
+                    if (boards.size < 2) Text("Create another board first.")
+                }
+            },
+            confirmButton = { TextButton(onClick = { moveFrom = null }) { Text("Cancel") } }
+        )
+    }
+    if (showReminder) ReminderDialog(
+        profile,
+        onChange = { setProfile(it); Reminder.schedule(ctx) },
+        onDismiss = { showReminder = false }
+    )
+
+    // ---- photo shared from another app
+    if (incoming != null) {
+        var newName by remember { mutableStateOf("") }
+        fun pick(b: Board) { pendingUri = incoming; openId = b.id; profileOpen = false; searching = false; onIncomingHandled() }
+        AlertDialog(
+            onDismissRequest = onIncomingHandled,
+            title = { Text("Add to which board?") },
+            text = {
+                Column {
+                    boards.forEach { b -> TextButton(onClick = { pick(b) }) { Text(b.name) } }
+                    OutlinedTextField(newName, { newName = it }, singleLine = true, label = { Text("or new board") })
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { if (newName.isNotBlank()) pick(addBoard(newName.trim())) }) { Text("Create & add") }
+            },
+            dismissButton = { TextButton(onClick = onIncomingHandled) { Text("Cancel") } }
         )
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun BoardScreen(board: Board, onBack: () -> Unit, onChange: (Board) -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var busy by remember { mutableStateOf(false) }
-    var pending by remember { mutableStateOf<Bitmap?>(null) }
-    var toDelete by remember { mutableStateOf<Item?>(null) }
-
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) {
-            busy = true
-            scope.launch {
-                pending = withContext(Dispatchers.Default) {
-                    val bmp = loadBitmap(ctx, uri)
-                    try { cutOut(bmp) } catch (e: Exception) { bmp }
-                }
-                busy = false
-            }
-        }
-    }
-
-    Scaffold(
-        containerColor = Bg,
-        topBar = {
-            TopAppBar(
-                title = { Text(board.name, color = Color.White) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg)
-            )
-        },
-        floatingActionButton = {
-            FloatingActionButton(onClick = {
-                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }, containerColor = Accent, contentColor = Color.Black) { Icon(Icons.Default.Add, "Add item") }
-        }
-    ) { pad ->
-        Box(Modifier.fillMaxSize().padding(pad)) {
-            if (board.items.isEmpty()) {
-                Text("Tap + to add a photo.\nThe background is removed automatically.",
-                    color = Color(0xFF999999), modifier = Modifier.align(Alignment.Center).padding(32.dp))
-            }
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 96.dp)
-            ) {
-                items(board.items, key = { it.id }) { item ->
-                    Column(Modifier.combinedClickable(onClick = {}, onLongClick = { toDelete = item })) {
-                        Box(Modifier.fillMaxWidth().aspectRatio(1f).background(Card, RoundedCornerShape(24.dp)).padding(14.dp),
-                            contentAlignment = Alignment.Center) {
-                            CutoutImage(item.file, Modifier.fillMaxSize())
-                        }
-                        if (item.name.isNotBlank()) Text(item.name, color = Color(0xFFDDDDDD), fontSize = 13.sp,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
-                    }
-                }
-            }
-            if (busy) Box(Modifier.fillMaxSize().background(Color(0x99000000)), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Accent)
-                    Spacer(Modifier.height(12.dp))
-                    Text("Cutting out item…", color = Color.White)
-                }
-            }
-        }
-    }
-
-    pending?.let { bmp ->
-        var name by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { pending = null },
-            title = { Text("Add item") },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Image(bmp.asImageBitmap(), null, Modifier.height(180.dp).fillMaxWidth(), contentScale = ContentScale.Fit)
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name (optional)") })
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val file = "${UUID.randomUUID()}.png"
-                    val scaled = if (maxOf(bmp.width, bmp.height) > 800) {
-                        val s = 800f / maxOf(bmp.width, bmp.height)
-                        Bitmap.createScaledBitmap(bmp, (bmp.width * s).toInt(), (bmp.height * s).toInt(), true)
-                    } else bmp
-                    File(ctx.filesDir, file).outputStream().use { scaled.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                    onChange(board.copy(items = board.items + Item(UUID.randomUUID().toString(), name.trim(), file)))
-                    pending = null
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { pending = null }) { Text("Cancel") } }
-        )
-    }
-    toDelete?.let { item ->
-        AlertDialog(
-            onDismissRequest = { toDelete = null },
-            title = { Text("Delete item?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    File(ctx.filesDir, item.file).delete()
-                    onChange(board.copy(items = board.items.filter { it.id != item.id }))
-                    toDelete = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancel") } }
-        )
-    }
+fun NameDialog(title: String, label: String, initial: String, ok: String, onDismiss: () -> Unit, onOk: (String) -> Unit) {
+    var name by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text(label) }) },
+        confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onOk(name.trim()); onDismiss() }) { Text(ok) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

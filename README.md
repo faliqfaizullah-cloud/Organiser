@@ -1,17 +1,18 @@
 # Organiser
 
-A visual wishlist organizer for Android. Create boards (Fashion, Gadgets, Skincare…), add photos of items, and the
-background is removed on-device so only the cut-out item is shown on a dark board — just like the mockup.
+Visual wishlist organizer for Android (Kotlin + Jetpack Compose, minSdk 28).
 
-- Kotlin + Jetpack Compose, minSdk 28
-- Background removal: ML Kit Subject Segmentation (on-device, needs Google Play services)
-- Long-press a board or item to delete it
+## Features
+- Boards grid with 2×2 cut-out previews, dashed "New" card, filter/sort (UI from the mockup)
+- Floating bottom bar: Home (stats) · Discover · Boards, plus a separate search button
+- Profile avatar (top-left) with name, currency, photo, backup export/import
+- Bell (top-right): daily morning notification with a random wishlist item (time configurable, test button)
+- On-device background removal (ML Kit Subject Segmentation) so only the item is shown
+- Per item: price, link, note, purchased toggle, move between boards, share cut-out PNG
+- Per board: totals (to buy / bought), filters (All / To buy / Bought), sorting
+- Share any photo from gallery/browser to Organiser to add it
+- Global search across all boards
 
 ## Get the APK
-1. Push this repo to GitHub (branch `main`).
-2. Open **Actions → Build APK → Run workflow** (it also runs on every push).
-3. Download `Organiser-apk` from the finished run, unzip, and install `Organiser.apk`.
-4. To publish a Release: `git tag v1.0 && git push --tags` — the APK is attached automatically.
-
-## Build locally
-Open in Android Studio and run, or `gradle assembleRelease` (Gradle 8.9, JDK 17).
+Push to GitHub → **Actions → Build APK** → download `Organiser-apk`.
+Tag `v1.1` (`git tag v1.1 && git push --tags`) to attach the APK to a Release.
